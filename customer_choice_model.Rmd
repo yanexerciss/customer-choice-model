@@ -1,0 +1,406 @@
+---
+title: "Customer_choice_model"
+author: "Yan Li"
+date: "3/1/2018"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r results='hide',message=FALSE,warning=FALSE}
+suppressPackageStartupMessages({
+  library(knitr)
+  library(dplyr)
+  library(tidyr)
+  library(Hmisc)
+  library(dplyr)
+  library(ggplot2)
+  library(stargazer)
+  library(AER)
+  library(tableone)
+  library(broom) #added library for converting to table
+  library(RColorBrewer) #for palettes
+  library(viridis)
+  library(ggthemes)
+  library(plotly)
+  library(scales)
+  
+  theme_set(theme(axis.text=element_text(size=8),
+        axis.title=element_text(size=12))) 
+  #setting global ggplot axis and axis label font size
+})
+```
+
+
+```{r,cache=TRUE}
+df1<-read.csv("refri_juice_sales.csv")
+df2<-read.csv("zone.csv")
+
+# Join
+df1<-df1%>%left_join(df2,by=c("store"="store"))
+
+```
+
+## NA vlaue analysis
+
+We find there're several NA's for column 'zone'.We have to check the importance of NA's then decide how to deal with them.
+
+What is the share of sales of these stores (zone = NA) in the overall chain 
+
+Answer:7%
+
+But we should remeber that a few zones have sales less than the NA zone
+```{r}
+df1_na_arrange<-df1%>%
+  group_by(zone,week,unibranddff)%>%
+  summarise(total_resales=sum(resales))
+share_sales_na<-sum(df1_na_arrange$total_resales[is.na(df1_na_arrange$zone)])/sum(df1_na_arrange$total_resales)
+share_sales_na
+```
+
+
+whether the shares for the top brands sold in these stores are very different from the shares in the other stores that belong to the chain.
+
+```{r}
+share_sales_na_brand<-df1_na_arrange%>%
+  mutate(nomatch=ifelse(is.na(zone),"nozone","other_store"))%>%
+  group_by(nomatch,unibranddff)%>%
+  summarise(total_resales_2=sum(total_resales))%>%
+  mutate(share=round(total_resales_2/sum(total_resales_2),2))
+
+ggplot(share_sales_na_brand,aes(factor(unibranddff),share,fill=nomatch))+geom_bar(stat="identity",position="dodge")+theme_minimal()+scale_fill_brewer(palette="Paired") + labs(x='Brands with NA values in zone column',y='Share of total sales',title='No major difference in distribution')+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+## Insights
+
+From the plot, we can see the shares for top brands sold in these stores(don't have zone) are not very different from shares in the other stores that belong to the chain.
+
+In conclusion, because the overall market share for stores without zone are not significant and the market shares for top brands solds in these stores are not very different from others, we believe remove these stores won't influence our analysis result. We decide to remove them.
+
+
+## Data Munging
+```{r}
+# drop NA column in zone
+df1<-df1[is.na(df1$zone)!=TRUE,]
+
+```
+
+Start by making a thorough description of what you have in the data: how many weeks? how many stores? how many brands and products for each brand? In what dimensions do the products in the data differ (package size? etc). What are the market shares? How do market shares vary over time?
+
+Do several graphs showing sales, prices, promotions, etc. over time, across stores, etc. Make plots that are informative. Extract interesting insights from your data description.
+
+```{r}
+sprintf("There are %s weeks", length(unique(df1$week)))
+sprintf("There are %s stores", length(unique(df1$store)))
+sprintf("There are %s unique brands", length(unique(df1$unibranddff)))
+
+product<-df1%>%
+  group_by(unibranddff)%>%
+  summarise(product_num=n_distinct(upc))
+product
+
+ggplot(product,aes(reorder(factor(unibranddff),-product_num),product_num,fill=
+                     factor(unibranddff)))+geom_bar(stat="identity") + 
+  theme_minimal() + scale_fill_brewer(palette="Set3") + labs(x='Unique Brands ',y='Unique products',title='Distribution of products by brand')+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
+In what dimensions do the products in the data differ (package size? etc)
+
+
+```{r}
+product_diff<-df1%>%
+  group_by(unibranddff,upc)%>%
+  summarise(product_size=mean(as.numeric(size)),
+            product_resale_persize=mean(reprice/as.numeric(size)),
+            product_prom=mean(prom))
+
+temp = df1 %>% group_by(Unique_packing = as.factor(size),unibranddff) %>% summarise(count = n())
+
+g=ggplot(temp, aes(x=reorder(unibranddff,-count), y=Unique_packing, fill=count))+geom_tile(color="white", size=0.5)+
+  scale_fill_viridis(name="Count of product",direction=-1)+ coord_equal() + labs(x='Unique Brands',y='Packing sizes', title = 'Distribution of products across package sizes')+
+  theme_tufte(base_family="Helvetica")+theme(plot.title=element_text(hjust=0))+
+  theme(axis.ticks=element_blank())+theme(axis.text=element_text(size=8))+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+#ggplotly(g)
+g
+```
+
+
+
+What are the market shares? How do market shares vary over time? (By brand)
+
+```{r}
+market_share_time<-df1%>%
+  group_by(week,unibranddff)%>%
+  summarise(total_resales=sum(resales))%>%
+  ungroup()%>%
+  group_by(week)%>%
+  mutate(market_share=round(total_resales/sum(total_resales),2))
+
+
+temp = df1 %>% group_by(week, unibranddff) %>% arrange(week,unibranddff) %>% 
+  mutate(cs = cumsum(resales))
+
+ggplot(market_share_time) + geom_line(aes(week,total_resales,colour = unibranddff))+theme_minimal()+theme_minimal()+scale_fill_brewer('Spectral')+labs(title='Evolution of total sales')+scale_y_continuous(labels = comma)
+```
+
+
+```{r}
+ggplot(market_share_time,aes(x=week,y=market_share,group=factor(unibranddff),
+                             color=factor(unibranddff)))+geom_line()+theme_minimal()+labs(title='Evolution of market share')
+
+```
+
+
+Do several graphs showing sales, prices, promotions, etc. over time, across stores, etc. 
+
+```{r}
+price_time<-df1%>%
+  group_by(week,unibranddff)%>%
+  summarise(avg_price=mean(reprice),avg_prom=mean(prom))
+  
+ggplot(price_time,aes(x=week,y=avg_price,group=factor(unibranddff),
+                      color=factor(unibranddff)))+geom_line()+theme_minimal()
+
+ggplot(price_time,aes(x=week,y=avg_prom,group=factor(unibranddff),
+                      color=factor(unibranddff)))+geom_line()+theme_minimal()
+```
+
+
+#Manipulate data
+
+```{r}
+#Change the other brands to 'No purc'
+c(levels(df1$unibranddff),"No purc")
+levels(df1$unibranddff)<-c(levels(df1$unibranddff),"No purc")
+df1$unibranddff[!(df1$unibranddff %in% factor(c("MMAID","TROP","HH","FLORIDA")))]<-'No purc'
+```
+
+
+
+```{r Data Munging2}
+df3<-df1%>%
+  mutate(priceperoz=reprice/as.numeric(size))%>%
+  group_by(unibranddff,week,zone)%>%
+  summarise(priceperoz2=mean(priceperoz),
+         price=mean(reprice),
+         promotion=mean(prom),
+         total=sum(resales),
+         whprice=mean(whprice),
+         whpriceperoz=mean(whprice/as.numeric(size)))%>%
+  ungroup()%>%
+  group_by(week,zone)%>%
+  mutate(zonesum=sum(total))%>%
+  ungroup()%>%
+  mutate(sjwz=total/zonesum)%>%
+  mutate(s0wz=sjwz)%>%
+  group_by(unibranddff,week)%>%
+  mutate(total_price=sum(price),
+         total_priceperoz=sum(priceperoz2),
+         total_whpriceperoz=sum(whpriceperoz),
+         count_zone=n())%>%
+  mutate(hausman=(total_price-price)/(count_zone-1),
+         hausmanperoz=(total_priceperoz)/(count_zone-1),
+         whhausmanperoz=(total_whpriceperoz)/(count_zone-1)
+         )%>%
+  ungroup()%>%
+  arrange(zone, week,unibranddff)%>%
+  select(c(-7,-10,-13,-14,-15,-16))
+  
+
+for (i in seq(5,nrow(df3),by=5)){
+  df3[i-4,]$s0wz<-df3[i,]$sjwz
+  df3[i-3,]$s0wz<-df3[i,]$sjwz
+  df3[i-2,]$s0wz<-df3[i,]$sjwz
+  df3[i-1,]$s0wz<-df3[i,]$sjwz
+}
+
+df3<-df3%>%mutate('sjwz/s0wz'=sjwz/s0wz)%>%
+  filter(unibranddff!='No purc')
+
+df3$zone = as.factor(df3$zone)
+
+#write.csv(df3,"data.csv")
+```
+
+```{r 3.1.1}
+OLS311<-lm(log(sjwz/s0wz, base = exp(1))~price+promotion,data=df3)
+OLS311_oz<-lm(log(sjwz/s0wz, base = exp(1))~priceperoz2+promotion,data=df3)
+summary(OLS311)
+summary(OLS311_oz)
+```
+
+```{r 3.1.2}
+OLS312<-lm(log(sjwz/s0wz, base = exp(1))~price+promotion+unibranddff,data=df3)
+OLS312_oz<-lm(log(sjwz/s0wz, base = exp(1))~priceperoz2+promotion+unibranddff,data=df3)
+summary(OLS312)
+summary(OLS312_oz)
+
+#stargazer(OLS311,OLS311_oz,OLS312,OLS312_oz,title="Results",type='html', align=TRUE)
+```
+
+```{r 3.1.3}
+OLS313<-lm(log(sjwz/s0wz, base = exp(1))~price+promotion+unibranddff+zone,data=df3)
+OLS313_oz<-lm(log(sjwz/s0wz, base = exp(1))~priceperoz2+promotion+unibranddff+zone,data=df3)
+summary(OLS313)
+summary(OLS313_oz)
+
+```
+
+```{r 3.1.4}
+IVREG3141<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+price|promotion+whprice,data=df3)
+IVREG3141_oz<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+priceperoz2|promotion+whpriceperoz,data=df3)
+summary(IVREG3141,vcov = sandwich, diagnostics = TRUE)
+summary(IVREG3141_oz,vcov = sandwich, diagnostics = TRUE)
+
+
+
+IVREG3142<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+price|promotion+unibranddff+whprice,data=df3)
+IVREG3142_oz<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+priceperoz2|promotion+unibranddff+whpriceperoz,data=df3)
+summary(IVREG3142,vcov = sandwich, diagnostics = TRUE)
+summary(IVREG3142_oz,vcov = sandwich, diagnostics = TRUE)
+
+
+
+IVREG3143<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+zone+price|promotion+unibranddff+zone+whprice,data=df3)
+IVREG3143_oz<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+zone+priceperoz2|promotion+unibranddff+zone+whpriceperoz,data=df3)
+
+summary(IVREG3143,vcov = sandwich, diagnostics = TRUE)
+summary(IVREG3143_oz,vcov = sandwich, diagnostics = TRUE)
+```
+
+```{r 3.1.5}
+IVREG3151<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+price|promotion+hausman,data=df3)
+IVREG3151_oz<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+priceperoz2|promotion+hausmanperoz,data=df3)
+summary(IVREG3151,vcov = sandwich, diagnostics = TRUE)
+summary(IVREG3151_oz,vcov = sandwich, diagnostics = TRUE)
+
+
+
+
+IVREG3152<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+price|promotion+unibranddff+hausman,data=df3)
+IVREG3152_oz<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+priceperoz2|promotion+unibranddff+hausmanperoz,data=df3)
+
+summary(IVREG3152,vcov = sandwich, diagnostics = TRUE)
+summary(IVREG3152_oz,vcov = sandwich, diagnostics = TRUE)
+
+
+
+IVREG3153<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+zone+price|promotion+unibranddff+zone+hausman,data=df3)
+IVREG3153_oz<-ivreg(log(sjwz/s0wz, base = exp(1))~promotion+unibranddff+zone+priceperoz2|promotion+unibranddff+zone+hausmanperoz,data=df3)
+summary(IVREG3153,vcov = sandwich, diagnostics = TRUE)
+summary(IVREG3153_oz,vcov = sandwich, diagnostics = TRUE)
+
+```
+
+
+Calculate own-price elsticities
+```{r}
+price_share_df<-df3%>%
+  group_by(unibranddff)%>%
+  summarise(mean_priceperoz=mean(priceperoz2),mean_price=mean(price),
+            mean_share=mean(sjwz))
+
+```
+
+own-price elsticities table
+```{r}
+price_coefficient<-c(OLS311$coefficients['price'],OLS312$coefficients['price'],OLS313$coefficients['price'],IVREG3141$coefficients['price'],IVREG3142$coefficients['price'],IVREG3143$coefficients['price'],IVREG3151$coefficients['price'],IVREG3152$coefficients['price'],IVREG3153$coefficients['price'])
+
+price_oz_coefficient<-c(OLS311_oz$coefficients['priceperoz2'],OLS312_oz$coefficients['priceperoz2'],OLS313_oz$coefficients['priceperoz2'],IVREG3141_oz$coefficients['priceperoz2'],IVREG3142_oz$coefficients['priceperoz2'],IVREG3143_oz$coefficients['priceperoz2'],IVREG3151_oz$coefficients['priceperoz2'],IVREG3152_oz$coefficients['priceperoz2'],IVREG3153_oz$coefficients['priceperoz2'])
+
+price_elsticities<-data_frame(md=c('OLS311','OLS312','OLS313','IVREG3141','IVREG3142','IVREG3141','IVREG3151','IVREG3152','IVREG3153'),price_co=price_coefficient)
+price_elsticities<-price_elsticities%>%
+  mutate(p_elsticity_florida=price_co*price_share_df$mean_price[1]*(1-price_share_df$mean_share[1]),
+         p_elsticity_hh=price_co*price_share_df$mean_price[2]*(1-price_share_df$mean_share[2]),
+         p_elsticity_mmaid=price_co*price_share_df$mean_price[3]*(1-price_share_df$mean_share[3]),
+         p_elsticity_trop=price_co*price_share_df$mean_price[4]*(1-price_share_df$mean_share[4]))
+
+price_oz_elsticities<-data_frame(md=c('OLS311_oz','OLS312_oz','OLS313_oz','IVREG3141_oz','IVREG3142_oz','IVREG3141_oz','IVREG3151_oz','IVREG3152_oz','IVREG3153_oz'),price_co=price_oz_coefficient)
+price_oz_elsticities<-price_oz_elsticities%>%
+  mutate(p_elsticity_florida=price_co*price_share_df$mean_priceperoz[1]*(1-price_share_df$mean_share[1]),
+         p_elsticity_hh=price_co*price_share_df$mean_priceperoz[2]*(1-price_share_df$mean_share[2]),
+         p_elsticity_mmaid=price_co*price_share_df$mean_priceperoz[3]*(1-price_share_df$mean_share[3]),
+         p_elsticity_trop=price_co*price_share_df$mean_priceperoz[4]*(1-price_share_df$mean_share[4]))
+
+price_elsticities = data.frame(price_elsticities)
+```
+
+
+Partial F-score 
+```{r}
+Partial_F<-data.frame(md_name=c('OLS3141','OLS3142','OLS3143','IVREG3151',
+                                   'IVREG3152','IVREG3153'),F_score=c(1715,2592.798,2765.410,26962.69,26313.35,
+                                                                      27363.366))
+Partial_F_oz<-data.frame(md_name=c('OLS3141_oz','OLS3142_oz','OLS3143_oz','IVREG3151_oz',
+                            'IVREG3152_oz','IVREG3153_oz'),F_score=c(29486.4,1126.653,1136.786,
+                                                                     268422.66,12634.387,12502.425))
+
+```
+
+
+
+
+## Model outputs
+
+```{r,results='asis',echo=FALSE}
+stargazer(OLS311,OLS312,OLS313,header = FALSE,title = 'OLS Price models',no.space = TRUE,single.row=TRUE,add.lines = list(c("PE Florida","-1.95","-1.61","-1.67"),c("PE HH","-1.77","-1.46","-1.51"),   c("PE MMAID","-1.78","-1.47","-1.53"),   c("PE Trop","-1.35","-1.12","-1.16")))
+```
+
+
+```{r,results='asis',echo=FALSE}
+stargazer(OLS311_oz,OLS312_oz,OLS313_oz,header = FALSE, title = 'OLS Price/ Oz models',no.space = TRUE,single.row = TRUE,add.lines = list(c("PE Florida","-0.11","-0.007","0.007"),c("PE HH","-0.32","-0.021","0.02"),   c("PE MMAID","-0.10","-0.006","0.006"),   c("PE Trop","-0.007","-0.004","0.004")))
+```
+
+
+```{r,results='asis',echo=FALSE}
+stargazer(IVREG3141,IVREG3142,IVREG3143,header = FALSE, title = 'IV price models',no.space = TRUE,single.row = TRUE,add.lines = list(c("PE Florida","4.22","-1.30","-1.344"),c("PE HH","3.83","-1.18","-1.21"),   c("PE MMAID","3.86","-1.19","-1.23"),   c("PE Trop","2.93","-0.90","-0.93"), c('Instrument variable','wholesale price','wholesale price','wholesale price'),c('Partial Fscore','1715','2592.798','2765.410')))
+```
+
+
+```{r,results='asis',echo=FALSE}
+stargazer(IVREG3141_oz,IVREG3142_oz,IVREG3143_oz,header = FALSE, title='IV price/Oz models',no.space = TRUE,single.row = TRUE,add.lines = list(c("PE Florida","-0.05","-0.03","-0.03"),c("PE HH","-0.15","-0.09","-0.10"),   c("PE MMAID","-0.04","-0.03","-0.03"),   c("PE Trop","-0.03","-0.02","-0.02"),c('Instrument variable','wholesale price peroz','wholesale price peroz','wholesale price peroz'),c('Partial Fscore','29486.4','1126.653','1136.786')))
+```
+
+
+
+```{r,results='asis',echo=FALSE}
+stargazer(IVREG3151,IVREG3152,IVREG3153,header = FALSE,  title = 'New IV price models',
+          no.space = TRUE,single.row = TRUE,add.lines = list(c("PE Florida","-2.23","-1.75","-1.76"),c("PE HH","-2.02","-1.59","-1.60"),   c("PE MMAID","-2.04","-1.60","-1.61"),   c("PE Trop","-1.55","-1.21","-1.22"),c('Instrument variable','hausman','hausman','hausman'),c('Partial Fscore','26962.69','26313.35','27363.366')))
+```
+
+
+
+```{r,results='asis',echo=FALSE}
+stargazer(IVREG3151_oz,IVREG3152_oz,IVREG3153_oz,header = FALSE, title = 'New IV Price/Oz models',no.space = TRUE,single.row = TRUE,add.lines = list(c("PE Florida","-0.11","0.02","0.02"),c("PE HH","-0.31","0.06","0.07"),   c("PE MMAID","-0.10","0.022","0.024"),   c("PE Trop","-0.07","0.01","0.01"),
+c('Instrument variable','hausman peroz','hausman peroz','hausman peroz'),c('Partial Fscore','268422.66','12634.387','12502.425')))
+```
+
+
+
+
+
+```{r,results='asis',echo=FALSE}
+# best of price models
+stargazer(OLS313,IVREG3143,IVREG3153,header=FALSE,title = 'The Best Price models',
+          no.space = TRUE,single.row = TRUE,add.lines = list(c("PE Florida","-1.67","-1.34","-1.76"),c("PE HH","-1.51","-1.21","-1.60"),   c("PE MMAID","-1.53","-1.23","-1.61"),   c("PE Trop","-1.16","-0.93","-1.22"),c('Instrument variable','NA','wholesale price','hausman'),c('Partial Fscore','NA','2765.410','27363.366')))
+```
+
+```{r,results='asis',echo=FALSE}
+#best of price/oz models
+stargazer(OLS313_oz,IVREG3143_oz,IVREG3153_oz,header=FALSE,title = 'The Best Price/Oz models',no.space = TRUE,single.row = TRUE,add.lines = list(c("PE Florida","0.007","-0.03","0.02"),c("PE HH","0.02","-0.10","0.07"), c("PE MMAID","0.006","-0.03","0.02"),c("PE Trop","0.004","-0.023","0.01"),c('Instrument variable','NA','wholesale price peroz','hausman peroz'),c('Partial Fscore','NA','1136.786','12502.425')))
+```
+
+
+
+
+
+
+
+
+
